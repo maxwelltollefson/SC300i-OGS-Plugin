@@ -11,7 +11,7 @@ Smart Filtering: Automatically clamps "garbage" data (topped ball misreads) to e
 Auto-Reconnect: Automatically detects if your radar disconnects or powers down and resumes scanning the moment it comes back online.
 
 Installation
-Download the Plugin: Visit the Releases page and download the latest Source code (zip) file.
+Download the Plugin: download the index.js and package.json files
 
 Locate your Plugins Folder:
 
@@ -19,7 +19,9 @@ Windows: Open %USERPROFILE%\AppData\Roaming\opengolfsim-desktop\plugins\ in your
 
 macOS: Navigate to ~/Library/Application Support/opengolfsim-desktop/plugins/.
 
-Install: Extract the contents of the ZIP file directly into the plugins folder.
+Install: create a folder called ogs-plugin-sc300i-main inside of the main ogs plugins folder
+
+Put the index.js and package.json files in that folder
 
 Restart: Restart OpenGolfSim. The plugin will automatically detect and connect to your SC300i when it is powered on and within range.
 
