@@ -7,10 +7,38 @@ const WRITE_UUID = "3030000253656964646163676e697773";
 
 let currentShot = {};
 let currentShotNumber = 1;
-let globalWriteChar = null; // Stored globally to allow outbound sync requests
+let globalWriteChar = null; 
+let currentClubId = "DR"; // Dynamically tracks active club to fix misreads
 
 // Helper for asynchronous delays
 const delay = ms => new Promise(res => setTimeout(res, ms));
+
+// Typical club launch angles mapped directly from your OGS profile configuration
+const CLUB_FALLBACK_ANGLES = {
+    "DR": 10.5, "1W": 10.5,
+    "3W": 14.0,
+    "4W": 16.0,
+    "5W": 18.0,
+    "6W": 19.0,
+    "7W": 21.0,
+    "3U": 20.0, "3H": 20.0,
+    "4U": 22.0, "4H": 22.0,
+    "5U": 24.0, "5H": 24.0,
+    "6U": 26.0, "6H": 26.0,
+    "7U": 28.0, "7H": 28.0,
+    "3I": 20.0,
+    "4I": 23.0,
+    "5I": 26.0,
+    "6I": 30.0,
+    "7I": 34.0,
+    "8I": 37.0,
+    "9I": 42.0,
+    "PW": 45.0,
+    "AW": 48.0, "GW": 48.0,
+    "SW": 52.0,
+    "LW": 60.0,
+    "PT": 0.0
+};
 
 // ==========================================
 // 1. DATA DECODING & PACKET BUILDING
@@ -23,10 +51,10 @@ function generateChecksum(packet) {
 
 function buildCommandPacket(cmd, payload) {
     let packet = new Uint8Array(20);
-    packet[0] = 0x53; // START
-    packet[1] = cmd;  // CMD
+    packet[0] = 0x53; 
+    packet[1] = cmd;  
     packet.set(payload, 2); 
-    packet[18] = 0x45; // END
+    packet[18] = 0x45; 
     packet[19] = generateChecksum(packet);
     return packet;
 }
@@ -41,19 +69,19 @@ function parseSequence(data) {
 
     try {
         if (seq === 2) {
-            // Ball Speed (converting from m/s to mph)
             currentShot.ballSpeed = dv.getFloat32(13, true) * 2.23694; 
         } else if (seq === 3) {
-            // Vertical Launch Angle (with fix for topped balls)
             let rawVla = dv.getFloat32(9, true);
+            
+            // Dynamic check for topped ball garbage data
             if (rawVla > 80) {
-                currentShot.vla = 8.0;
-                logging.info(`⚠️ Garbage VLA detected (${rawVla}°). Clamping to 8.0° for topped shot.`);
+                let correctedAngle = CLUB_FALLBACK_ANGLES[currentClubId] || 15.0;
+                currentShot.vla = correctedAngle;
+                logging.info(`⚠️ Garbage VLA detected (${rawVla}°). Dynamic replacement: setting to ${correctedAngle}° for ${currentClubId}.`);
             } else {
                 currentShot.vla = rawVla;
             }
         } else if (seq === 4) {
-            // Spin Rate & Final Shot Dispatch
             let spinRate = dv.getFloat32(13, true);
             if (currentShot.ballSpeed > 0) {
                 shotData.sendShot({
@@ -69,7 +97,6 @@ function parseSequence(data) {
         }
     } catch (e) { logging.error("Parse Error: " + e); }
 
-    // Build Two's Complement ACK packet (Mandatory Heartbeat)
     let ack = new Uint8Array(20);
     ack[0] = 0x53; ack[1] = 0x73;
     ack[2] = uint8[2]; ack[3] = uint8[3];
@@ -82,29 +109,22 @@ function parseSequence(data) {
 // 2. OUTBOUND CLUB SYNC TO RADAR
 // ==========================================
 async function executeClubSync(clubIndex) {
-    if (!globalWriteChar) {
-        // Suppress errors if we are just disconnected, wait for auto-reconnect
-        return;
-    }
+    if (!globalWriteChar) return;
 
     try {
         logging.info(`🔄 Syncing Club Index ${clubIndex} to SC300i...`);
 
-        // Phase 1: Propose Setting 1 (0x6F)
         let p1 = new Uint8Array(16);
         p1[0] = 0x20; 
         p1[13] = clubIndex; 
         let pkt1 = buildCommandPacket(111, p1);
 
-        // Phase 2: Commit Setting 2 (0x6E)
         let p2 = new Uint8Array(16); 
         let pkt2 = buildCommandPacket(110, p2);
 
-        // Phase 3: Admin Setting Refresh (0x30)
         let p3 = new Uint8Array(16); 
         let pkt3 = buildCommandPacket(48, p3);
 
-        // Send Sequence with 300ms delays
         await globalWriteChar.write(pkt1.buffer, true);
         await delay(300);
         await globalWriteChar.write(pkt2.buffer, true);
@@ -144,8 +164,11 @@ shotData.on('club', (incomingData) => {
             }
         }
 
-        if (ogsId && OGS_TO_SC300_MAP[ogsId] !== undefined) {
-            clubIndex = OGS_TO_SC300_MAP[ogsId];
+        if (ogsId) {
+            currentClubId = ogsId; // Cache the ID for the misread parser logic
+            if (OGS_TO_SC300_MAP[ogsId] !== undefined) {
+                clubIndex = OGS_TO_SC300_MAP[ogsId];
+            }
         } else if (typeof incomingData === 'number') {
             clubIndex = incomingData;
         }
@@ -169,13 +192,11 @@ bleClient.on('discover', async (device) => {
             shotData.updateDeviceStatus({ isConnected: true, isReady: true });
             logging.info("✅ Connected to SC300i");
             
-            // --- NEW: AUTO-RECONNECT LISTENER ---
             device.on('disconnect', async () => {
                 logging.info("⚠️ SC300i Disconnected. Cleaning up...");
-                globalWriteChar = null; // Prevent plugin from crashing on club change
+                globalWriteChar = null; 
                 shotData.updateDeviceStatus({ isConnected: false, isReady: false });
                 
-                // Wait 2 seconds to let the PC Bluetooth stack clear
                 await delay(2000); 
                 
                 try {
@@ -185,7 +206,6 @@ bleClient.on('discover', async (device) => {
                     logging.error("Failed to restart scan: " + err);
                 }
             });
-            // ------------------------------------
 
             const discovery = await device.discoverAllServicesAndCharacteristics();
             const notifyChar = discovery.characteristics.find(c => c.uuid.replace(/-/g, '').toLowerCase() === NOTIFY_UUID);
